@@ -117,12 +117,16 @@ class KnowledgeBase:
         
         return context
     
-    def add_knowledge(self, category: str, query: str, answer: str):
-        """Add new knowledge item"""
+    def add_knowledge(self, category: str, query: str, answer: str, source: str = None):
+        """Add new knowledge item with optional source"""
         if category not in self.knowledge:
             self.knowledge[category] = []
         
-        self.knowledge[category].append({"query": query, "answer": answer})
+        self.knowledge[category].append({
+            "query": query,
+            "answer": answer,
+            "source": source  # Track where knowledge came from
+        })
     
     def save_to_file(self, filepath: str):
         """Save knowledge base to JSON"""

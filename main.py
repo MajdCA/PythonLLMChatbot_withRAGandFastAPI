@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from llm_chat import ChatBot
+from knowledge_loader import KnowledgeLoader
 import os
 from dotenv import load_dotenv
 
@@ -41,6 +42,53 @@ async def get_categories():
 async def health():
     """Health check endpoint"""
     return {"status": "ok", "assistant": "Geoatlas"}
+
+@app.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...), category: str = "documents"):
+    """Upload and process PDF"""
+    try:
+        # Save uploaded file
+        filepath = f"temp_{file.filename}"
+        with open(filepath, "wb") as f:
+            f.write(await file.read())
+        
+        # Load into KB
+        loader = KnowledgeLoader(chatbot.knowledge_base)
+        loader.load_pdf_to_kb(filepath, category)
+        
+        # Clean up
+        os.remove(filepath)
+        
+        return {"status": "success", "message": f"PDF loaded: {file.filename}"}
+    
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/upload-powerpoint")
+async def upload_powerpoint(file: UploadFile = File(...), category: str = "presentations"):
+    """Upload and process PowerPoint"""
+    try:
+        filepath = f"temp_{file.filename}"
+        with open(filepath, "wb") as f:
+            f.write(await file.read())
+        
+        loader = KnowledgeLoader(chatbot.knowledge_base)
+        loader.load_powerpoint_to_kb(filepath, category)
+        
+        os.remove(filepath)
+        
+        return {"status": "success", "message": f"PowerPoint loaded: {file.filename}"}
+    
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/kb-stats")
+async def kb_stats():
+    """Get knowledge base statistics"""
+    stats = {}
+    for category, items in chatbot.knowledge_base.knowledge.items():
+        stats[category] = len(items)
+    return {"total_entries": sum(stats.values()), "by_category": stats}
 
 if __name__ == "__main__":
     import uvicorn
