@@ -1,36 +1,61 @@
 import os
 import requests
 from knowledge_base import KnowledgeBase
+from vector_store import VectorStore
+from hybrid_search import HybridSearch
 
 class ChatBot:
-    def __init__(self, ollama_url: str = None):
+    def __init__(self, ollama_url: str = None, use_vector_store: bool = True):
         self.ollama_url = ollama_url or os.getenv("OLLAMA_URL", "http://192.168.1.253:11434")
         self.model = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
-        self.knowledge_base = KnowledgeBase()
-        # Confidence threshold: if KB match > 0.85, skip Ollama
         self.kb_confidence_threshold = float(os.getenv("KB_CONFIDENCE_THRESHOLD", "0.85"))
+        
+        # Initialize knowledge base
+        self.knowledge_base = KnowledgeBase()
+        
+        # Initialize vector store (if enabled)
+        self.use_vector_store = use_vector_store
+        if use_vector_store:
+            self.vector_store = VectorStore(persist_dir="./chroma_db")
+            self.hybrid_search = HybridSearch(self.knowledge_base, self.vector_store)
+        else:
+            self.vector_store = None
+            self.hybrid_search = None
     
     def answer(self, query: str) -> str:
         """
-        RAG with optimization: Skip Ollama if KB match is high confidence
-        Flow:
-        - If exact/high match in KB (>0.85) → Return immediately (FAST)
-        - Otherwise → Use Ollama with KB context (ACCURATE)
+        Answer query using hybrid search + Ollama RAG
+        
+        Decision Flow:
+        1. KB confidence >= 0.85? → Return instantly (FAST)
+        2. Vector search good? → Return (SEMANTIC)
+        3. Low confidence? → Use Ollama with context (ACCURATE)
         """
         
-        # Step 1: Search KB and get confidence score
-        kb_answer, confidence = self.knowledge_base.search_with_confidence(query)
+        if self.use_vector_store and self.hybrid_search:
+            # Hybrid search (KB + vector)
+            answer, confidence, source = self.hybrid_search.search(query)
+            
+            if confidence >= self.kb_confidence_threshold:
+                # High confidence match found
+                return answer
+            
+            # Low confidence - use Ollama with hybrid context
+            context = self.hybrid_search.search_with_context(query)
+            return self._ollama_answer_with_rag(query, context)
         
-        # Step 2: If high confidence match, return immediately (NO Ollama call)
-        if confidence >= self.kb_confidence_threshold:
-            return kb_answer  # Fast path - instant response
-        
-        # Step 3: Low confidence - use Ollama with context for better answer
-        context = self.knowledge_base.search_with_context(query)
-        return self._ollama_answer_with_rag(query, context)
+        else:
+            # Fallback to KB only (no vector store)
+            kb_answer, kb_confidence = self.knowledge_base.search_with_confidence(query)
+            
+            if kb_confidence >= self.kb_confidence_threshold:
+                return kb_answer
+            
+            context = self.knowledge_base.search_with_context(query)
+            return self._ollama_answer_with_rag(query, context)
     
     def _ollama_answer_with_rag(self, query: str, context: str) -> str:
-        """Get answer from Ollama using knowledge base as context (GPU accelerated)"""
+        """Get answer from Ollama using context (KB + vector search)"""
         
         system_prompt = """You are Geoatlas, a geotechnical monitoring web assistant.
 Use the provided knowledge base context to answer accurately. If context doesn't cover the question, use your general knowledge.
@@ -66,5 +91,5 @@ KNOWLEDGE BASE CONTEXT:
             return f"Error: {str(e)}"
     
     def add_knowledge(self, category: str, query: str, answer: str):
-        """Add new knowledge to base"""
+        """Add new knowledge to KB only (vector store for documents)"""
         self.knowledge_base.add_knowledge(category, query, answer)

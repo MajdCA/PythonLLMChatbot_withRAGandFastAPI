@@ -1,14 +1,31 @@
+import os
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from llm_chat import ChatBot
 from knowledge_loader import KnowledgeLoader
-import os
+from vector_store import VectorStore
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = FastAPI(title="Geoatlas Chatbot API")
-chatbot = ChatBot()
+
+# Initialize with vector store enabled
+chatbot = ChatBot(use_vector_store=True)
+vector_store = chatbot.vector_store
+knowledge_loader = KnowledgeLoader(chatbot.knowledge_base, vector_store)
+
+# Auto-load KB and vector store on startup
+@app.on_event("startup")
+async def startup_event():
+    """Load saved KB and vector store on app start"""
+    if os.path.exists("knowledge_base.json"):
+        chatbot.knowledge_base.load_from_file("knowledge_base.json")
+        print("✓ KB loaded from knowledge_base.json")
+    
+    # Vector store auto-loads from chroma_db/ (handled by ChromaDB)
+    stats = vector_store.get_stats()
+    print(f"✓ Vector store ready: {stats['total_documents']} documents")
 
 class QueryRequest(BaseModel):
     query: str
@@ -20,7 +37,7 @@ class AddKnowledgeRequest(BaseModel):
 
 @app.post("/chat")
 async def chat(request: QueryRequest):
-    """Send query and get answer from chatbot"""
+    """Query the chatbot (KB + vector search + Ollama)"""
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
@@ -29,67 +46,142 @@ async def chat(request: QueryRequest):
 
 @app.post("/add-knowledge")
 async def add_knowledge(request: AddKnowledgeRequest):
-    """Add new knowledge to chatbot"""
+    """Add knowledge manually"""
     chatbot.add_knowledge(request.category, request.query, request.answer)
     return {"status": "success", "message": f"Knowledge added to {request.category}"}
 
-@app.get("/categories")
-async def get_categories():
-    """Get all knowledge categories"""
-    return {"categories": chatbot.knowledge_base.get_all_categories()}
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {"status": "ok", "assistant": "Geoatlas"}
-
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...), category: str = "documents"):
-    """Upload and process PDF"""
+    """Upload PDF (processed into vector store + KB)"""
     try:
-        # Save uploaded file
         filepath = f"temp_{file.filename}"
         with open(filepath, "wb") as f:
             f.write(await file.read())
         
-        # Load into KB
-        loader = KnowledgeLoader(chatbot.knowledge_base)
-        loader.load_pdf_to_kb(filepath, category)
+        # Load into BOTH KB and vector store (ONE-TIME)
+        knowledge_loader.load_pdf_to_kb(filepath, category)
+        knowledge_loader.save_kb()
         
-        # Clean up
         os.remove(filepath)
-        
-        return {"status": "success", "message": f"PDF loaded: {file.filename}"}
+        return {"status": "success", "message": f"PDF processed: {file.filename}"}
     
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 @app.post("/upload-powerpoint")
 async def upload_powerpoint(file: UploadFile = File(...), category: str = "presentations"):
-    """Upload and process PowerPoint"""
+    """Upload PowerPoint (processed into vector store + KB)"""
     try:
         filepath = f"temp_{file.filename}"
         with open(filepath, "wb") as f:
             f.write(await file.read())
         
-        loader = KnowledgeLoader(chatbot.knowledge_base)
-        loader.load_powerpoint_to_kb(filepath, category)
+        knowledge_loader.load_powerpoint_to_kb(filepath, category)
+        knowledge_loader.save_kb()
         
         os.remove(filepath)
-        
-        return {"status": "success", "message": f"PowerPoint loaded: {file.filename}"}
+        return {"status": "success", "message": f"PowerPoint processed: {file.filename}"}
     
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/categories")
+async def get_categories():
+    """List KB categories"""
+    return {"categories": chatbot.knowledge_base.get_all_categories()}
+
 @app.get("/kb-stats")
 async def kb_stats():
-    """Get knowledge base statistics"""
-    stats = {}
+    """Get KB and vector store statistics"""
+    kb_stats = {}
     for category, items in chatbot.knowledge_base.knowledge.items():
-        stats[category] = len(items)
-    return {"total_entries": sum(stats.values()), "by_category": stats}
+        kb_stats[category] = len(items)
+    
+    return {
+        "knowledge_base": {
+            "total_entries": sum(kb_stats.values()),
+            "by_category": kb_stats
+        },
+        "vector_store": vector_store.get_stats()
+    }
+
+@app.get("/health")
+async def health():
+    """Health check"""
+    return {"status": "ok", "assistant": "Geoatlas"}
+
+## Vector Store (NEW!)
+
+### What is Vector Embedding?
+
+Instead of string matching, documents are converted to semantic vectors (384-dim):
+
+```
+Text: "Pore pressure measurement techniques"
+  ↓
+Embedding Model: all-MiniLM-L6-v2
+  ↓
+Vector: [0.234, -0.156, 0.891, ... 384 values]
+  ↓
+Stored in ChromaDB
+```
+
+**Benefits:**
+- ✅ Semantic search (finds similar meaning)
+- ✅ NO re-upload needed (stored permanently)
+- ✅ Survives app restarts
+- ✅ Instant on startup
+- ✅ Scale to 1000s of documents
+
+### One-Time Upload
+
+```
+Upload PDF once
+  ↓
+Extract chunks (300 chars)
+  ↓
+Generate embeddings (vector form)
+  ↓
+Store in ChromaDB (persist_dir: ./chroma_db)
+  ↓
+On restart: Auto-loaded from chroma_db/
+  ↓
+NO re-upload needed!
+```
+
+### Hybrid Search Flow
+
+```
+User Query
+  ↓
+1. Traditional KB (keyword match) ← FAST
+2. Vector Search (semantic match) ← SMART
+3. Combined context for Ollama ← ACCURATE
+```
+
+### Storage Comparison
+
+| Feature | KB (JSON) | Vector Store (ChromaDB) |
+|---------|-----------|------------------------|
+| Storage | knowledge_base.json | chroma_db/ |
+| Search Type | Keyword + similarity | Semantic |
+| Speed | Instant | ~100ms |
+| Scalability | ~1000 entries | 1M+ entries |
+| Restart | Auto-load | Auto-load |
+| Re-upload | Not needed | NOT NEEDED ✅ |
+
+### Directory Structure
+
+```
+chatbotv3/
+├── knowledge_base.json      ← Traditional KB
+├── chroma_db/               ← Vector embeddings
+│   ├── chroma.parquet
+│   ├── index/
+│   └── ...
+└── ...
+```
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
