@@ -1,0 +1,20 @@
+{
+   "greetings": [
+                {"query": "hi", "answer": "Hi I am Geoatlas web assistant how can i help you today"},
+                {"query": "hello", "answer": "Hi I am Geoatlas web assistant how can i help you today"},
+                {"query": "hey", "answer": "Hi I am Geoatlas web assistant how can i help you today"},
+                {"query": "ciao", "answer": "Ciao! Sono Geoatlas, l'assistente web di monitoraggio geotecnico. Come posso aiutarti?"}
+            ],
+  "navigation": [
+                {"query": "how to navigate the website", "answer": "You can navigate using the left sidebar menu. Click on different sections like Dashboard, Monitoring, Reports, and Settings."},
+                {"query": "where is the dashboard", "answer": "The dashboard is accessible from the main menu on the left side."},
+                {"query": "navigate", "answer": "Use the left sidebar menu to navigate the website."}
+            ],
+            "configuration": [
+                {"query": "how to open configuration page", "answer": "Click on 'Settings' in the left menu, then select 'Configuration' tab."}
+            ],
+            "geotechnical": [
+                {"query": "what is geotechnical monitoring", "answer": "Geotechnical monitoring involves continuous measurement of soil and rock properties to ensure structural stability and safety."},
+                {"query": "what is settlement monitoring", "answer": "Settlement monitoring measures the vertical displacement of structures over time."}
+            ]
+}

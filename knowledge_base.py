@@ -1,139 +1,74 @@
 import json
-from typing import List, Dict, Tuple
+import os
+import logging
 from difflib import SequenceMatcher
 
+logger = logging.getLogger("geoatlas.kb")
+
 class KnowledgeBase:
-    def __init__(self):
-        self.knowledge = {
-            "greetings": [
-                {"query": "hi", "answer": "Hi I am Geoatlas web assistant how can i help you today"},
-                {"query": "hello", "answer": "Hi I am Geoatlas web assistant how can i help you today"},
-                {"query": "hey", "answer": "Hi I am Geoatlas web assistant how can i help you today"},
-                {"query": "ciao", "answer": "Ciao! Sono Geoatlas, l'assistente web di monitoraggio geotecnico. Come posso aiutarti?"},
-            ],
-            "navigation": [
-                {"query": "how to navigate the website", "answer": "You can navigate using the left sidebar menu. Click on different sections like Dashboard, Monitoring, Reports, and Settings."},
-                {"query": "where is the dashboard", "answer": "The dashboard is accessible from the main menu on the left side."},
-                {"query": "navigate", "answer": "Use the left sidebar menu to navigate the website."},
-            ],
-            "configuration": [
-                {"query": "how to open configuration page", "answer": "Click on 'Settings' in the left menu, then select 'Configuration' tab."},
-            ],
-            "geotechnical": [
-                {"query": "what is geotechnical monitoring", "answer": "Geotechnical monitoring involves continuous measurement of soil and rock properties to ensure structural stability and safety."},
-                {"query": "what is settlement monitoring", "answer": "Settlement monitoring measures the vertical displacement of structures over time."},
-            ],
-        }
+    def __init__(self, filepath: str = "knowledge_base_data.json"):
+        self.filepath = filepath
+        self.knowledge = self._load_from_file()
+        logger.info(f"KnowledgeBase loaded | path={self.filepath} | categories={list(self.knowledge.keys())}")
     
-    def search_with_confidence(self, query: str) -> Tuple[str, float]:
-        """
-        Search KB and return answer with confidence score
-        Returns: (answer, confidence_score)
-        - 1.0 = exact match
-        - 0.85-0.99 = high similarity (use KB directly)
-        - 0.5-0.84 = medium similarity (use Ollama with context)
-        - <0.5 = low similarity (use Ollama with context)
-        """
-        query_lower = query.lower().strip()
-        
-        all_items = []
-        for category, items in self.knowledge.items():
-            all_items.extend(items)
-        
-        # EXACT MATCH (1.0 confidence)
-        for item in all_items:
-            if query_lower == item["query"].lower().strip():
-                return item["answer"], 1.0
-        
-        # SIMILARITY MATCH (calculate scores)
-        best_match = None
-        best_score = 0
-        
-        for item in all_items:
-            stored_query = item["query"].lower().strip()
-            ratio = SequenceMatcher(None, query_lower, stored_query).ratio()
-            
-            if ratio > best_score:
-                best_match = item
-                best_score = ratio
-        
-        # Return best match with confidence score
-        if best_match:
-            return best_match["answer"], best_score
-        
-        # No match found
-        return "", 0.0
+    def _load_from_file(self):
+        """Load knowledge base from JSON file"""
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load KB: {e}")
+                return {}
+        return {}
     
-    def search(self, query: str) -> str:
-        """Exact match search (legacy method)"""
-        query_lower = query.lower().strip()
-        
-        all_items = []
-        for category, items in self.knowledge.items():
-            all_items.extend(items)
-        
-        for item in all_items:
-            if query_lower == item["query"].lower().strip():
-                return item["answer"]
-        
-        return None
-    
-    def search_with_context(self, query: str, top_k: int = 3) -> str:
-        """
-        RAG: Retrieve top K relevant knowledge items as context
-        Returns formatted context string for Ollama
-        """
-        query_lower = query.lower().strip()
-        
-        all_items = []
-        for category, items in self.knowledge.items():
-            all_items.extend(items)
-        
-        # Score all items by similarity
-        scored_items = []
-        for item in all_items:
-            stored_query = item["query"].lower().strip()
-            ratio = SequenceMatcher(None, query_lower, stored_query).ratio()
-            scored_items.append({
-                "score": ratio,
-                "query": item["query"],
-                "answer": item["answer"]
-            })
-        
-        # Sort by score (highest first) and take top K
-        scored_items.sort(key=lambda x: x["score"], reverse=True)
-        top_items = scored_items[:top_k]
-        
-        # Filter items with score > 0.3 (minimum relevance)
-        relevant_items = [item for item in top_items if item["score"] > 0.3]
-        
-        # Format context string for Ollama
-        if not relevant_items:
-            return ""
-        
-        context = "Related knowledge base entries:\n"
-        for i, item in enumerate(relevant_items, 1):
-            context += f"{i}. Q: {item['query']}\n   A: {item['answer']}\n"
-        
-        return context
+    def _save_to_file(self):
+        """Save knowledge base to JSON file"""
+        try:
+            with open(self.filepath, 'w') as f:
+                json.dump(self.knowledge, f, indent=2)
+            logger.info("KnowledgeBase saved")
+        except Exception as e:
+            logger.error(f"Failed to save KB: {e}")
     
     def add_knowledge(self, category: str, query: str, answer: str):
-        """Add new knowledge item"""
+        """Add new knowledge entry"""
         if category not in self.knowledge:
             self.knowledge[category] = []
         
-        self.knowledge[category].append({"query": query, "answer": answer})
+        self.knowledge[category].append({
+            "query": query,
+            "answer": answer
+        })
+        logger.debug(f"KB entry added | category={category} | query_len={len(query)} | answer_len={len(answer)}")
+        self._save_to_file()
     
-    def save_to_file(self, filepath: str):
-        """Save knowledge base to JSON"""
-        with open(filepath, 'w') as f:
-            json.dump(self.knowledge, f, indent=2)
+    def search_with_confidence(self, query: str):
+        """Search KB and return answer with confidence score"""
+        best_match = None
+        best_score = 0
+        
+        for category, entries in self.knowledge.items():
+            for entry in entries:
+                score = SequenceMatcher(None, query.lower(), entry["query"].lower()).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_match = entry["answer"]
+        logger.debug(f"KB confidence search | query_len={len(query)} | best_score={best_score:.3f}")
+        return best_match or "", best_score
     
-    def load_from_file(self, filepath: str):
-        """Load knowledge base from JSON"""
-        with open(filepath, 'r') as f:
-            self.knowledge = json.load(f)
+    def search_with_context(self, query: str):
+        """Search KB and return relevant context"""
+        results = []
+        for category, entries in self.knowledge.items():
+            for entry in entries:
+                score = SequenceMatcher(None, query.lower(), entry["query"].lower()).ratio()
+                if score > 0.4:
+                    results.append(f"[{category}] Q: {entry['query']}\nA: {entry['answer']}")
+        ctx = "\n\n".join(results)
+        logger.debug(f"KB context search | query_len={len(query)} | matches={len(results)} | ctx_len={len(ctx)}")
+        return ctx
     
-    def get_all_categories(self) -> List[str]:
-        """Return all knowledge categories"""
+    def get_all_categories(self):
+        """Get all knowledge categories"""
         return list(self.knowledge.keys())
