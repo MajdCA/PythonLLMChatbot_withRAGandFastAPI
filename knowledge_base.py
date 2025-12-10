@@ -51,10 +51,12 @@ class KnowledgeBase:
         for category, entries in self.knowledge.items():
             for entry in entries:
                 score = SequenceMatcher(None, query.lower(), entry["query"].lower()).ratio()
+                logger.debug(f"Score match | query='{query}' | kb_query='{entry['query']}' | score={score:.3f}")  # ADD
                 if score > best_score:
                     best_score = score
                     best_match = entry["answer"]
-        logger.debug(f"KB confidence search | query_len={len(query)} | best_score={best_score:.3f}")
+        
+        logger.debug(f"Best match found | score={best_score:.3f} | matched={bool(best_match)}")  # ADD
         return best_match or "", best_score
     
     def search_with_context(self, query: str):

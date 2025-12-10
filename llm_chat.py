@@ -4,7 +4,8 @@ import logging
 from knowledge_base import KnowledgeBase
 from prompt_builder import PromptBuilder
 from vectorstore.vector_store import VectorStore
-
+from dotenv import load_dotenv
+load_dotenv()
 logger = logging.getLogger("geoatlas.chatbot")
 
 class ChatBot:
@@ -12,78 +13,93 @@ class ChatBot:
         self.ollama_url = ollama_url or os.getenv("OLLAMA_URL", "http://192.168.1.253:11435")
         self.model = os.getenv("OLLAMA_MODEL", "llama3.1:latest")
         self.knowledge_base = KnowledgeBase(kb_filepath)
-        # Confidence threshold: if KB match > 0.85, skip Ollama
         self.kb_confidence_threshold = float(os.getenv("KB_CONFIDENCE_THRESHOLD", "0.85"))
-        # Load vector store if it exists
+        self.vs_threshold = float(os.getenv("VS_THRESHOLD", "0.75"))  # ⭐ Increased from 0.6
+        self.vs_top_k = int(os.getenv("VS_TOP_K", "5"))  # ⭐ Limit total chunks
+        
         self.vector_store_path = os.getenv(
             "VECTOR_STORE_PATH",
             os.path.join(os.path.dirname(__file__), "vectorstore", "vector_store.json"),
         )
         self.vector_store = VectorStore(self.vector_store_path, self.ollama_url) if os.path.exists(self.vector_store_path) else None
-        # Hint in logs where log files are stored
+        
         log_dir = os.getenv("LOG_DIR", os.path.join(os.path.dirname(__file__), "logs"))
-        logger.info(f"ChatBot initialized | ollama_url={self.ollama_url} | model={self.model} | kb_threshold={self.kb_confidence_threshold} | vector_store_loaded={self.vector_store is not None} | log_dir={log_dir}")
+        logger.info(f"ChatBot initialized | ollama_url={self.ollama_url} | model={self.model} | kb_threshold={self.kb_confidence_threshold} | vs_threshold={self.vs_threshold} | vs_top_k={self.vs_top_k} | vector_store_loaded={self.vector_store is not None}")
     
     def answer(self, query: str) -> str:
-        """
-        RAG with optimization: Skip Ollama if KB match is high confidence
-        Flow:
-        - If exact/high match in KB (>0.85) ? Return immediately (FAST)
-        - Otherwise ? Use Ollama with KB context + vector store context (ACCURATE)
-        """
+        """RAG with optimization: Skip Ollama if KB match is high confidence"""
         logger.info(f"Answer called | query='{query}'")
-        # Step 1: Search KB and get confidence score
+        
+        # Step 1: Search KB
         kb_answer, confidence = self.knowledge_base.search_with_confidence(query)
         logger.info(f"KB search | confidence={confidence:.3f} | matched={bool(kb_answer)}")
         
-        # Step 2: If high confidence match, return immediately (NO Ollama call)
+        # Step 2: High confidence? Return immediately
         if confidence >= self.kb_confidence_threshold:
-            logger.info("High-confidence KB match: returning KB answer without Ollama")
-            logger.debug(f"KB answer: {kb_answer}")
-            return kb_answer  # Fast path - instant response
+            logger.info("High-confidence KB match: returning KB answer without context")
+            return kb_answer
         
-        # Step 3: Low confidence - use Ollama with context for better answer
-        kb_context = self.knowledge_base.search_with_context(query)
-        vs_context = ""
+        # Step 3: Build combined context
+        context_parts = []
+        
+        # Add KB context if moderate confidence
+        if confidence > 0.5:
+            kb_context = self.knowledge_base.search_with_context(query)
+            if kb_context:
+                context_parts.append(kb_context)
+                logger.debug(f"Added KB context | len={len(kb_context)}")
+        
+        # Add vector store context - ALWAYS take top hits
         if self.vector_store:
             try:
-                # Log detailed vector hits with scores
-                hits = self.vector_store.search(query, top_k=5)
-                logger.info(f"VectorStore search | hits={len(hits)}")
-                for idx, (score, rec) in enumerate(hits, start=1):
-                    src = rec.get("metadata", {}).get("source")
-                    preview = (rec.get("text", "")[:200] + ("..." if len(rec.get("text", "")) > 200 else ""))
-                    logger.debug(f"VS hit {idx} | score={score:.4f} | source={src} | text_preview={preview}")
-                # Compose VS context from hits
-                vs_context = "\n\n".join([f"[{rec.get('metadata', {}).get('source', 'source')}] {rec['text']}" for _, rec in hits])
+                hits = self.vector_store.search(query, top_k=10)
+                logger.info(f"VectorStore search | total_hits={len(hits)}")
+
+                # Take the best N hits regardless of score
+                top_hits = hits[: self.vs_top_k]
+                logger.info(f"VectorStore top hits (no threshold) | selected={len(top_hits)} | max={self.vs_top_k}")
+
+                if top_hits:
+                    for idx, (score, rec) in enumerate(top_hits, start=1):
+                        src = rec.get("metadata", {}).get("source", "unknown")
+                        text = rec.get("text", "")
+                        logger.debug(f"VS hit {idx} | INCLUDED | score={score:.4f} | source={src} | len={len(text)}")
+                        if text.strip():
+                            context_parts.append(f"[{src}]\n{text}")
+                else:
+                    logger.info("No VectorStore results returned")
             except Exception as e:
                 logger.error(f"VectorStore search error: {e}")
         else:
-            logger.info("VectorStore not loaded; skipping VS context")
+            logger.info("VectorStore not loaded")
         
-        # Merge contexts (if available)
-        merged_context_parts = [part for part in [kb_context, vs_context] if part]
-        context = "\n\n".join(merged_context_parts)
-        logger.info(f"Context prepared | kb_len={len(kb_context)} | vs_len={len(vs_context)} | merged_len={len(context)}")
+        # Merge all context
+        context = "\n\n---\n\n".join(context_parts) if context_parts else ""
+        logger.info(f"Context prepared | total_len={len(context)} | parts={len(context_parts)}")
+        
+        if not context:
+            logger.warning("No context found, using LLM with just the query")
+        
         return self._ollama_answer_with_rag(query, context)
     
     def _ollama_answer_with_rag(self, query: str, context: str) -> str:
-        """Get answer from Ollama using knowledge base as context (GPU accelerated)"""
-        # Build full prompt using PromptBuilder
+        """Get answer from Ollama with context"""
         full_prompt = PromptBuilder.build_full_prompt(query, context)
+        
         payload = {
             "model": self.model,
             "prompt": full_prompt,
             "stream": False,
-            "temperature": 0.5,
-            "num_predict": 200,
+            "temperature": 0.2,
+            "num_predict": 80,
             "top_k": 40,
             "top_p": 0.9,
+            "stop": ["\n\nQuestion:", "\nUser:", "---"],
         }
+        
         logger.info(f"Ollama request | url={self.ollama_url}/api/generate | model={self.model}")
-        payload_repr = {k: v if k != 'prompt' else f'[prompt length: {len(full_prompt)}]' for k, v in payload.items()}
-        logger.debug(f"Ollama payload (truncated prompt len={len(full_prompt)}): {payload_repr}")
-        logger.debug(f"Full prompt content sent to Ollama:\n{full_prompt}")
+        logger.debug(f"Ollama config | temp={payload['temperature']} | max_tokens={payload['num_predict']} | top_k={payload['top_k']}")
+        
         try:
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
@@ -96,7 +112,7 @@ class ChatBot:
             logger.debug(f"Ollama answer:\n{resp_text}")
             return resp_text
         except requests.exceptions.ConnectionError:
-            msg = "Error: Cannot connect to Ollama at 192.168.1.253:11434. Check network connection."
+            msg = f"Error: Cannot connect to Ollama at {self.ollama_url}. Check network connection."
             logger.error(msg)
             return msg
         except Exception as e:

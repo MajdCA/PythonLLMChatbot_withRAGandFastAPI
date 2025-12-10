@@ -44,9 +44,11 @@ async def chat(request: QueryRequest):
     """Send query and get answer from chatbot"""
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
+    logger.debug(f"Request payload | query='{request.query}' | query_len={len(request.query)}")  # ADD
     logger.info("Incoming /chat request")
     logger.info(f"User query: {request.query}")
     answer = chatbot.answer(request.query)
+    logger.debug(f"Response payload | answer_len={len(answer)}")  # ADD
     logger.info("Outgoing /chat response")
     logger.info(f"Answer: {answer}")
     return {"query": request.query, "answer": answer}

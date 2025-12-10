@@ -2,9 +2,11 @@ import os
 import argparse
 from typing import List, Tuple, Dict
 from PyPDF2 import PdfReader
-from vectorstore.vector_store import VectorStore
+from .vector_store import VectorStore
+import logging
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+logger = logging.getLogger(__name__)
 
 def read_pdf(path: str) -> List[Tuple[int, str]]:
     pages = []
@@ -31,9 +33,11 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
         end = min(start + chunk_size, n)
         chunk = text[start:end]
         chunks.append(chunk)
+        logger.debug(f"Chunk created | start={start} | end={end} | chunk_len={len(chunk)}")
         if end == n:
             break
         start = max(0, end - overlap)
+    logger.debug(f"Text chunked | total_chunks={len(chunks)} | text_len={n}")
     return chunks
 
 def collect_texts_from_pdfs(pdf_dir: str, chunk_size: int, overlap: int) -> Tuple[List[str], List[Dict]]:
